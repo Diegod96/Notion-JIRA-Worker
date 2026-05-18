@@ -1,6 +1,6 @@
 import {
   DEFAULT_JIRA_BASE_URL,
-  DEFAULT_JIRA_JQL,
+  jiraJqlFromEnv,
   optionalEnv,
   requiredEnv,
 } from "../src/config.js";
@@ -8,6 +8,7 @@ import {
   JiraClient,
   issueAssignee,
   issueEpicLink,
+  issueProject,
   issueStatus,
   issueSummary,
   jiraIssueUrl,
@@ -98,7 +99,7 @@ function loadConfig() {
   return {
     jiraBaseUrl: optionalEnv("JIRA_BASE_URL", DEFAULT_JIRA_BASE_URL),
     jiraPat: requiredEnv("JIRA_PAT"),
-    jiraJql: optionalEnv("JIRA_JQL", DEFAULT_JIRA_JQL),
+    jiraJql: jiraJqlFromEnv(),
     notionApiToken: requiredEnv("NOTION_API_TOKEN"),
     notionMirrorDataSourceId: requiredEnv("NOTION_TECHDEBT_DATA_SOURCE_ID"),
     notionBoardDataSourceId: requiredEnv("NOTION_TECHDEBT_BOARD_DATA_SOURCE_ID"),
@@ -464,6 +465,7 @@ export function notionPropertiesForIssue(options: {
     "Issue Type": richTextProperty(issue.fields.issuetype?.name ?? ""),
     "Epic Link": richTextProperty(issueEpicLink(issue)),
     Assignee: richTextProperty(issueAssignee(issue)),
+    Project: richTextProperty(issueProject(issue)),
     Updated: dateProperty(issue.fields.updated),
     Created: dateProperty(issue.fields.created),
     "Due Date": dateProperty(issue.fields.duedate),
@@ -505,6 +507,7 @@ export function editableBoardPropertiesForIssue(options: {
     "Jira Status": richTextProperty(jiraStatus),
     Priority: richTextProperty(pendingEditPage ? richTextValue(pendingEditPage.properties.Priority) : issue.fields.priority?.name ?? ""),
     Assignee: richTextProperty(pendingEditPage ? richTextValue(pendingEditPage.properties.Assignee) : issueAssignee(issue)),
+    Project: richTextProperty(issueProject(issue)),
     "Issue Type": richTextProperty(pendingEditPage ? richTextValue(pendingEditPage.properties["Issue Type"]) : issue.fields.issuetype?.name ?? ""),
     "Epic Link": richTextProperty(pendingEditPage ? richTextValue(pendingEditPage.properties["Epic Link"]) : issueEpicLink(issue)),
     Updated: dateProperty(issue.fields.updated),

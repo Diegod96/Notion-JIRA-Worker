@@ -13,6 +13,7 @@ test("toWorkerProperties maps Jira issue fields into worker properties", () => {
       priority: { name: "Medium" },
       issuetype: { name: "Story" },
       assignee: { displayName: "Diego Delgado" },
+      project: { key: "TECHDEBT", name: "Technical Debt" },
       updated: "2026-05-15T13:00:00.000-0400",
       created: "2026-05-14T10:00:00.000-0400",
       duedate: "2026-05-20",
@@ -28,5 +29,6 @@ test("toWorkerProperties maps Jira issue fields into worker properties", () => {
   assert.deepEqual(properties.Status, [["In Progress"]]);
   assert.deepEqual(properties["Jira Status"], [["In Progress"]]);
   assert.deepEqual(properties["Jira Link"], [["https://jira.dev.upenn.edu/browse/TECHDEBT-1"]]);
+  assert.deepEqual(properties.Project, [["TECHDEBT"]]);
   assert.deepEqual(properties.Labels, [["techdebt,flow"]]);
 });

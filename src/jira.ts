@@ -9,6 +9,7 @@ export type JiraIssue = {
     priority?: { name?: string | null } | null;
     issuetype?: { name?: string | null } | null;
     assignee?: { displayName?: string | null; name?: string | null; emailAddress?: string | null } | null;
+    project?: { key?: string | null; name?: string | null } | null;
     updated?: string | null;
     created?: string | null;
     duedate?: string | null;
@@ -69,6 +70,7 @@ export class JiraClient {
         "priority",
         "issuetype",
         "assignee",
+        "project",
         "updated",
         "created",
         "duedate",
@@ -180,6 +182,11 @@ export function issueStatus(issue: JiraIssue): string {
 export function issueAssignee(issue: JiraIssue): string {
   const assignee = issue.fields.assignee;
   return assignee?.displayName || assignee?.emailAddress || assignee?.name || "";
+}
+
+export function issueProject(issue: JiraIssue): string {
+  const project = issue.fields.project;
+  return project?.key || project?.name || "";
 }
 
 export function issueEpicLink(issue: JiraIssue): string {

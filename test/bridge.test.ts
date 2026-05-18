@@ -116,6 +116,7 @@ test("notionPropertiesForIssue maps Jira issue into Notion REST properties", () 
       priority: { name: "Minor" },
       issuetype: { name: "Story" },
       assignee: { displayName: "Diego Delgado" },
+      project: { key: "TECHDEBT", name: "Technical Debt" },
       updated: "2026-05-15T13:00:00.000-0400",
       created: "2026-05-14T10:00:00.000-0400",
       duedate: "2026-05-20",
@@ -141,6 +142,9 @@ test("notionPropertiesForIssue maps Jira issue into Notion REST properties", () 
   });
   assert.deepEqual(properties.Labels, {
     multi_select: [{ name: "June_2026_Compass_Release" }],
+  });
+  assert.deepEqual(properties.Project, {
+    rich_text: [{ type: "text", text: { content: "TECHDEBT" } }],
   });
   assert.deepEqual(properties["Sync Error"], {
     rich_text: [{ type: "text", text: { content: "Example error" } }],
@@ -181,6 +185,7 @@ test("editableBoardPropertiesForIssue maps Jira issue into editable board fields
       status: { name: "Ready" },
       priority: { name: "Minor" },
       assignee: { displayName: "Diego Delgado" },
+      project: { key: "TECHDEBT", name: "Technical Debt" },
       issuetype: { name: "Story" },
       customfield_10008: "TECHDEBT-4",
       updated: "2026-05-15T13:00:00.000-0400",
@@ -207,6 +212,9 @@ test("editableBoardPropertiesForIssue maps Jira issue into editable board fields
   });
   assert.deepEqual(properties["Board Status"], {
     select: { name: "Ready" },
+  });
+  assert.deepEqual(properties.Project, {
+    rich_text: [{ type: "text", text: { content: "TECHDEBT" } }],
   });
 });
 
