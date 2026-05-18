@@ -17,11 +17,11 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 const NOTION_VERSION = "2026-03-11";
-const PROJECT_DIR = "/Users/diegodelgado/Developer/Personal/Notion-JIRA-Techdebt-Worker";
+const PROJECT_DIR = process.cwd();
 const VPN_FAILURE_MARKER = join(PROJECT_DIR, "logs", "vpn-reactivation-needed.json");
 const VPN_FAILURE_PROMPT = join(PROJECT_DIR, "logs", "vpn-reactivation-needed.md");
 const CODEX_GLOBALPROTECT_PROMPT =
-  "Use Computer Use to open GlobalProtect, reconnect/reactivate the VPN, wait until GlobalProtect reports Connected, then rerun npm run sync:local in /Users/diegodelgado/Developer/Personal/Notion-JIRA-Techdebt-Worker.";
+  `Use Computer Use to open GlobalProtect, reconnect/reactivate the VPN, wait until GlobalProtect reports Connected, then rerun npm run sync:local in ${PROJECT_DIR}.`;
 
 type JsonObject = Record<string, unknown>;
 
@@ -42,6 +42,7 @@ type LogLevel = "info" | "warn" | "error";
 type WritebackResult = {
   issueKey: string;
   syncError: string;
+  applied: boolean;
 };
 
 async function main() {
@@ -50,7 +51,10 @@ async function main() {
   const jira = new JiraClient({ baseUrl: env.jiraBaseUrl, pat: env.jiraPat });
   const notion = new NotionClient(env.notionApiToken);
 
-  logger.info("starting techdebt sync bridge", { dataSourceId: env.notionDataSourceId });
+  logger.info("starting techdebt sync bridge", {
+    mirrorDataSourceId: env.notionMirrorDataSourceId,
+    boardDataSourceId: env.notionBoardDataSourceId,
+  });
 
   try {
     await jira.myself();
@@ -68,21 +72,23 @@ async function main() {
 
   await clearVpnFailureSignal();
 
-  const pages = await notion.queryAllDataSourcePages(env.notionDataSourceId);
-  const changes = pages.map(toPendingStatusChange).filter(isPresent);
+  const boardPages = await notion.queryAllDataSourcePages(env.notionBoardDataSourceId);
+  const changes = boardPages.map(toPendingStatusChange).filter(isPresent);
   logger.info("found pending Notion status changes", { count: changes.length });
 
-  const writebackResults = new Map<string, string>();
+  const writebackResults = new Map<string, WritebackResult>();
 
   for (const change of changes) {
     const result = await processStatusChange({ change, jira, notion, logger });
-    writebackResults.set(result.issueKey, result.syncError);
+    writebackResults.set(result.issueKey, result);
   }
 
   const issues = await jira.searchAllIssues({ jql: env.jiraJql });
-  await notion.syncEditableJiraStatusMirror({
-    existingPages: pages,
+  await notion.syncEditableBoard({
+    boardDataSourceId: env.notionBoardDataSourceId,
+    existingPages: boardPages,
     issues,
+    jiraBaseUrl: env.jiraBaseUrl,
     writebackResults,
     logger,
   });
@@ -96,7 +102,8 @@ function loadConfig() {
     jiraPat: requiredEnv("JIRA_PAT"),
     jiraJql: optionalEnv("JIRA_JQL", DEFAULT_JIRA_JQL),
     notionApiToken: requiredEnv("NOTION_API_TOKEN"),
-    notionDataSourceId: requiredEnv("NOTION_TECHDEBT_DATA_SOURCE_ID"),
+    notionMirrorDataSourceId: requiredEnv("NOTION_TECHDEBT_DATA_SOURCE_ID"),
+    notionBoardDataSourceId: requiredEnv("NOTION_TECHDEBT_BOARD_DATA_SOURCE_ID"),
   };
 }
 
@@ -117,13 +124,13 @@ async function processStatusChange(options: {
       issueKey: change.issueKey,
       requestedStatus: change.requestedStatus,
     });
-    return { issueKey: change.issueKey, syncError: message };
+    return { issueKey: change.issueKey, syncError: message, applied: false };
   }
 
   if (normalizeStatus(issueStatus(issue)) === normalizeStatus(change.requestedStatus)) {
     await notion.updateSyncError(change.page.id, "");
     logger.info("status already matches Jira", { issueKey: change.issueKey });
-    return { issueKey: change.issueKey, syncError: "" };
+    return { issueKey: change.issueKey, syncError: "", applied: true };
   }
 
   const transitions = await jira.getTransitions(change.issueKey);
@@ -141,7 +148,7 @@ async function processStatusChange(options: {
       issueKey: change.issueKey,
       requestedStatus: change.requestedStatus,
     });
-    return { issueKey: change.issueKey, syncError: message };
+    return { issueKey: change.issueKey, syncError: message, applied: false };
   }
 
   await jira.transitionIssue(change.issueKey, matchingTransition.id);
@@ -151,13 +158,12 @@ async function processStatusChange(options: {
     requestedStatus: change.requestedStatus,
     transitionId: matchingTransition.id,
   });
-  return { issueKey: change.issueKey, syncError: "" };
+  return { issueKey: change.issueKey, syncError: "", applied: true };
 }
 
 export function toPendingStatusChange(page: NotionPage): PendingStatusChange | null {
   const issueKey = richTextValue(page.properties["Issue Key"]);
-  const requestedStatus =
-    richTextValue(page.properties["Board Status"]) || richTextValue(page.properties.Status);
+  const requestedStatus = richTextValue(page.properties["Board Status"]);
   const syncedJiraStatus = richTextValue(page.properties["Jira Status"]);
   const syncedUpdated = dateValue(page.properties.Updated);
 
@@ -252,39 +258,55 @@ class NotionClient {
     });
   }
 
-  async syncEditableJiraStatusMirror(options: {
+  async syncEditableBoard(options: {
+    boardDataSourceId: string;
     existingPages: NotionPage[];
     issues: JiraIssue[];
-    writebackResults: Map<string, string>;
+    jiraBaseUrl: string;
+    writebackResults: Map<string, WritebackResult>;
     logger: ReturnType<typeof createLogger>;
   }): Promise<void> {
-    const { existingPages, issues, writebackResults, logger } = options;
+    const { boardDataSourceId, existingPages, issues, jiraBaseUrl, writebackResults, logger } = options;
     const pageByIssueKey = new Map(
       existingPages
         .map((page) => [richTextValue(page.properties["Issue Key"]), page] as const)
         .filter(([issueKey]) => issueKey),
     );
     let updated = 0;
-    let missingFromNotion = 0;
+    let created = 0;
 
     for (const issue of issues) {
       const page = pageByIssueKey.get(issue.key);
+      const properties = editableBoardPropertiesForIssue({
+        issue,
+        jiraBaseUrl,
+        existingPage: page,
+        writebackResult: writebackResults.get(issue.key),
+      });
 
       if (page) {
-        await this.updatePageProperties(page.id, editableMirrorPropertiesForIssue({
-          issue,
-          syncError: writebackResults.get(issue.key) ?? "",
-        }));
+        await this.updatePageProperties(page.id, properties);
         updated += 1;
       } else {
-        missingFromNotion += 1;
+        await this.createDataSourcePage(boardDataSourceId, properties);
+        created += 1;
       }
     }
 
-    logger.info("synced editable Jira status mirror to Notion", {
+    logger.info("synced editable board to Notion", {
       jiraIssues: issues.length,
       updated,
-      missingFromNotion,
+      created,
+    });
+  }
+
+  private async createDataSourcePage(dataSourceId: string, properties: JsonObject): Promise<void> {
+    await this.request("/v1/pages", {
+      method: "POST",
+      body: JSON.stringify({
+        parent: { data_source_id: dataSourceId },
+        properties,
+      }),
     });
   }
 
@@ -383,13 +405,40 @@ export function notionPropertiesForIssue(options: {
   };
 }
 
-export function editableMirrorPropertiesForIssue(options: {
+export function editableBoardPropertiesForIssue(options: {
   issue: JiraIssue;
-  syncError: string;
+  jiraBaseUrl: string;
+  existingPage?: NotionPage;
+  writebackResult?: WritebackResult;
 }): JsonObject {
+  const { issue, jiraBaseUrl, existingPage, writebackResult } = options;
+  const jiraStatus = issueStatus(issue);
+  const existingBoardStatus = existingPage
+    ? richTextValue(existingPage.properties["Board Status"])
+    : "";
+  const existingJiraStatus = existingPage
+    ? richTextValue(existingPage.properties["Jira Status"])
+    : "";
+  const hasPendingHumanStatus =
+    existingBoardStatus &&
+    existingJiraStatus &&
+    normalizeStatus(existingBoardStatus) !== normalizeStatus(existingJiraStatus);
+  const preserveBoardStatus = hasPendingHumanStatus && !writebackResult?.applied;
+  const boardStatus = preserveBoardStatus ? existingBoardStatus : jiraStatus;
+
   return {
-    "Board Status": selectProperty(issueStatus(options.issue)),
-    "Writeback Error": richTextProperty(options.syncError),
+    Name: titleProperty(issueSummary(issue)),
+    "Issue Key": richTextProperty(issue.key),
+    "Board Status": selectProperty(boardStatus),
+    "Jira Status": richTextProperty(jiraStatus),
+    Priority: richTextProperty(issue.fields.priority?.name ?? ""),
+    Assignee: richTextProperty(issueAssignee(issue)),
+    "Issue Type": richTextProperty(issue.fields.issuetype?.name ?? ""),
+    "Epic Link": richTextProperty(issueEpicLink(issue)),
+    Updated: dateProperty(issue.fields.updated),
+    "Jira Link": urlProperty(jiraIssueUrl(jiraBaseUrl, issue.key)),
+    "Last Synced At": dateProperty(new Date().toISOString()),
+    "Writeback Error": richTextProperty(writebackResult?.syncError ?? ""),
   };
 }
 
