@@ -18,11 +18,22 @@ Fill in `.env`:
 ```bash
 JIRA_BASE_URL=https://jira.dev.upenn.edu
 JIRA_PAT=<jira-personal-access-token>
-JIRA_JQL=assignee = diegodel AND "Epic Link" in (SYSM-1, TECHDEBT-4)
+JIRA_ASSIGNEE=diegodel
+RELEASE_LABEL_START_MONTH=2026-06
+RELEASE_LABEL_WINDOW_SIZE=2
+JIRA_JQL=
 NOTION_API_TOKEN=<notion-token-with-database-access>
 NOTION_TECHDEBT_DATA_SOURCE_ID=<worker-managed-techdebt-stories-data-source-id>
 NOTION_TECHDEBT_BOARD_DATA_SOURCE_ID=<editable-techdebt-board-data-source-id>
 ```
+
+When `JIRA_JQL` is blank, the sync generates a rolling Compass release query from the release settings. With the defaults above, it syncs:
+
+```jql
+assignee = diegodel AND "Epic Link" is not EMPTY AND project is not EMPTY AND labels in (June_2026_Compass_Release, July_2026_Compass_Release)
+```
+
+After each monthly deployment cycle, advance `RELEASE_LABEL_START_MONTH` to the next release month. For example, after the June release, set `RELEASE_LABEL_START_MONTH=2026-07` to cover July and August. Set `JIRA_JQL` only when you need a full manual override.
 
 ## Worker
 
@@ -54,6 +65,7 @@ Required fields:
 - `Jira Status`
 - `Priority`
 - `Assignee`
+- `Project`
 - `Issue Type`
 - `Epic Link`
 - `Updated`
@@ -62,7 +74,7 @@ Required fields:
 - `Writeback Error`
 - `Notes`
 
-The board view should group by `Board Status`. The current editable board data source is:
+The canonical board view should group by `Board Status`. Keep one board for all synced Jira projects, and add filtered Notion views by `Project` when you want project-specific Kanban or table views. The current editable board data source is:
 
 ```bash
 NOTION_TECHDEBT_BOARD_DATA_SOURCE_ID=445459d1-be6d-495f-b594-0c1f24610e59

@@ -3,8 +3,8 @@ import * as Builder from "@notionhq/workers/builder";
 import * as Schema from "@notionhq/workers/schema";
 import {
   DEFAULT_JIRA_BASE_URL,
-  DEFAULT_JIRA_JQL,
   TECHDEBT_SYNC_KEY,
+  jiraJqlFromEnv,
   optionalEnv,
   requiredEnv,
 } from "./config.js";
@@ -12,6 +12,7 @@ import {
   JiraClient,
   issueAssignee,
   issueEpicLink,
+  issueProject,
   issueStatus,
   issueSummary,
   jiraIssueUrl,
@@ -39,6 +40,7 @@ const techdebtStories = worker.database("techdebtStories", {
       Priority: Schema.richText(),
       "Issue Type": Schema.richText(),
       "Epic Link": Schema.richText(),
+      Project: Schema.richText(),
       Assignee: Schema.richText(),
       Updated: Schema.date(),
       Created: Schema.date(),
@@ -56,7 +58,7 @@ worker.sync(TECHDEBT_SYNC_KEY, {
   schedule: "manual",
   execute: async (state: SyncState | undefined) => {
     const baseUrl = optionalEnv("JIRA_BASE_URL", DEFAULT_JIRA_BASE_URL);
-    const jql = optionalEnv("JIRA_JQL", DEFAULT_JIRA_JQL);
+    const jql = jiraJqlFromEnv();
     const jira = new JiraClient({
       baseUrl,
       pat: requiredEnv("JIRA_PAT"),
@@ -93,6 +95,7 @@ export function toWorkerProperties(issue: JiraIssue, baseUrl: string) {
     Priority: Builder.richText(issue.fields.priority?.name ?? ""),
     "Issue Type": Builder.richText(issue.fields.issuetype?.name ?? ""),
     "Epic Link": Builder.richText(issueEpicLink(issue)),
+    Project: Builder.richText(issueProject(issue)),
     Assignee: Builder.richText(issueAssignee(issue)),
     Updated: dateTimeOrBlank(issue.fields.updated),
     Created: dateTimeOrBlank(issue.fields.created),
