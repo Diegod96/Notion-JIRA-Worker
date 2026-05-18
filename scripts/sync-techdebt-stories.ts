@@ -30,11 +30,9 @@ type NotionPage = {
   properties: Record<string, JsonObject>;
 };
 
-type PendingStatusChange = {
+type PendingIssueChange = {
   page: NotionPage;
   issueKey: string;
-  requestedStatus: string;
-  syncedJiraStatus: string;
   syncedUpdated: string;
 };
 
@@ -73,13 +71,13 @@ async function main() {
   await clearVpnFailureSignal();
 
   const boardPages = await notion.queryAllDataSourcePages(env.notionBoardDataSourceId);
-  const changes = boardPages.map(toPendingStatusChange).filter(isPresent);
-  logger.info("found pending Notion status changes", { count: changes.length });
+  const changes = boardPages.map(toPendingIssueChange).filter(isPresent);
+  logger.info("found editable Notion rows to reconcile", { count: changes.length });
 
   const writebackResults = new Map<string, WritebackResult>();
 
   for (const change of changes) {
-    const result = await processStatusChange({ change, jira, notion, logger });
+    const result = await processIssueChange({ change, jira, notion, logger });
     writebackResults.set(result.issueKey, result);
   }
 
@@ -107,81 +105,151 @@ function loadConfig() {
   };
 }
 
-async function processStatusChange(options: {
-  change: PendingStatusChange;
+async function processIssueChange(options: {
+  change: PendingIssueChange;
   jira: JiraClient;
   notion: NotionClient;
   logger: ReturnType<typeof createLogger>;
 }): Promise<WritebackResult> {
   const { change, jira, notion, logger } = options;
   const issue = await jira.getIssue(change.issueKey);
-  const currentUpdated = issue.fields.updated ?? "";
+  const currentUpdated = normalizeNotionDate(issue.fields.updated);
+  const syncedUpdated = normalizeNotionDate(change.syncedUpdated);
+  const requested = requestedJiraChanges(change.page, issue);
 
-  if (currentUpdated !== change.syncedUpdated) {
-    const message = `Stale Notion edit: Jira updated at ${currentUpdated || "unknown"} after row synced at ${change.syncedUpdated || "unknown"}.`;
-    await notion.updateSyncError(change.page.id, message);
-    logger.warn("skipped stale Notion status change", {
-      issueKey: change.issueKey,
-      requestedStatus: change.requestedStatus,
-    });
-    return { issueKey: change.issueKey, syncError: message, applied: false };
-  }
-
-  if (normalizeStatus(issueStatus(issue)) === normalizeStatus(change.requestedStatus)) {
-    await notion.updateSyncError(change.page.id, "");
-    logger.info("status already matches Jira", { issueKey: change.issueKey });
+  if (!requested.hasChanges) {
     return { issueKey: change.issueKey, syncError: "", applied: true };
   }
 
-  const transitions = await jira.getTransitions(change.issueKey);
-  const matchingTransition = transitions.find(
-    (transition) =>
-      normalizeStatus(transition.to?.name ?? transition.name) ===
-      normalizeStatus(change.requestedStatus),
-  );
-
-  if (!matchingTransition) {
-    const targets = transitions.map((transition) => transition.to?.name ?? transition.name).join(", ");
-    const message = `Invalid Jira transition target "${change.requestedStatus}". Available targets: ${targets || "none"}.`;
+  if (!sameSyncedMinute(currentUpdated, syncedUpdated)) {
+    const message = `Stale Notion edit: Jira updated at ${currentUpdated || "unknown"} after row synced at ${syncedUpdated || "unknown"}.`;
     await notion.updateSyncError(change.page.id, message);
-    logger.warn("skipped invalid Jira transition", {
+    logger.warn("skipped stale Notion issue change", {
       issueKey: change.issueKey,
-      requestedStatus: change.requestedStatus,
+      changedFields: requested.changedFields,
     });
     return { issueKey: change.issueKey, syncError: message, applied: false };
   }
 
-  await jira.transitionIssue(change.issueKey, matchingTransition.id);
+  try {
+    if (requested.status) {
+      const transitions = await jira.getTransitions(change.issueKey);
+      const matchingTransition = transitions.find(
+        (transition) =>
+          normalizeStatus(transition.to?.name ?? transition.name) ===
+          normalizeStatus(requested.status ?? ""),
+      );
+
+      if (!matchingTransition) {
+        const targets = transitions.map((transition) => transition.to?.name ?? transition.name).join(", ");
+        throw new Error(`Invalid Jira transition target "${requested.status}". Available targets: ${targets || "none"}.`);
+      }
+
+      await jira.transitionIssue(change.issueKey, matchingTransition.id);
+    }
+
+    if (Object.keys(requested.fields).length > 0) {
+      await jira.updateIssueFields(change.issueKey, requested.fields);
+    }
+  } catch (error) {
+    const message = errorMessage(error);
+    await notion.updateSyncError(change.page.id, message);
+    logger.warn("skipped invalid Jira issue update", {
+      issueKey: change.issueKey,
+      changedFields: requested.changedFields,
+      error: message,
+    });
+    return { issueKey: change.issueKey, syncError: message, applied: false };
+  }
+
   await notion.updateSyncError(change.page.id, "");
-  logger.info("transitioned Jira issue", {
+  logger.info("updated Jira issue from Notion", {
     issueKey: change.issueKey,
-    requestedStatus: change.requestedStatus,
-    transitionId: matchingTransition.id,
+    changedFields: requested.changedFields,
   });
   return { issueKey: change.issueKey, syncError: "", applied: true };
 }
 
-export function toPendingStatusChange(page: NotionPage): PendingStatusChange | null {
+export function toPendingIssueChange(page: NotionPage): PendingIssueChange | null {
   const issueKey = richTextValue(page.properties["Issue Key"]);
-  const requestedStatus = richTextValue(page.properties["Board Status"]);
-  const syncedJiraStatus = richTextValue(page.properties["Jira Status"]);
   const syncedUpdated = dateValue(page.properties.Updated);
 
-  if (!issueKey || !requestedStatus || normalizeStatus(requestedStatus) === normalizeStatus(syncedJiraStatus)) {
+  if (!issueKey) {
     return null;
   }
 
   return {
     page,
     issueKey,
-    requestedStatus,
-    syncedJiraStatus,
     syncedUpdated,
+  };
+}
+
+export const toPendingStatusChange = toPendingIssueChange;
+
+export function requestedJiraChanges(page: NotionPage, issue: JiraIssue) {
+  const fields: Record<string, unknown> = {};
+  const changedFields: string[] = [];
+
+  const summary = richTextValue(page.properties.Name);
+  if (summary && summary !== issueSummary(issue)) {
+    fields.summary = summary;
+    changedFields.push("Name");
+  }
+
+  const priority = richTextValue(page.properties.Priority);
+  if (priority !== (issue.fields.priority?.name ?? "")) {
+    fields.priority = priority ? { name: priority } : null;
+    changedFields.push("Priority");
+  }
+
+  const assignee = richTextValue(page.properties.Assignee);
+  if (assignee !== issueAssignee(issue)) {
+    fields.assignee = assignee ? { name: assignee } : null;
+    changedFields.push("Assignee");
+  }
+
+  const issueType = richTextValue(page.properties["Issue Type"]);
+  if (issueType !== (issue.fields.issuetype?.name ?? "")) {
+    fields.issuetype = issueType ? { name: issueType } : null;
+    changedFields.push("Issue Type");
+  }
+
+  const epicLink = richTextValue(page.properties["Epic Link"]);
+  if (epicLink !== issueEpicLink(issue)) {
+    fields.customfield_10008 = epicLink || null;
+    changedFields.push("Epic Link");
+  }
+
+  const status = richTextValue(page.properties["Board Status"]);
+  const requestedStatus = status && normalizeStatus(status) !== normalizeStatus(issueStatus(issue))
+    ? status
+    : "";
+  if (requestedStatus) {
+    changedFields.push("Board Status");
+  }
+
+  return {
+    fields,
+    status: requestedStatus,
+    changedFields,
+    hasChanges: changedFields.length > 0,
   };
 }
 
 export function normalizeStatus(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+export function sameSyncedMinute(left: string, right: string): boolean {
+  const leftTime = Date.parse(left);
+  const rightTime = Date.parse(right);
+
+  if (Number.isNaN(leftTime) || Number.isNaN(rightTime)) {
+    return left === right;
+  }
+
+  return Math.floor(leftTime / 60000) === Math.floor(rightTime / 60000);
 }
 
 export async function writeVpnFailureSignal(options: {
@@ -412,6 +480,10 @@ export function editableBoardPropertiesForIssue(options: {
   writebackResult?: WritebackResult;
 }): JsonObject {
   const { issue, jiraBaseUrl, existingPage, writebackResult } = options;
+  const pendingEditPage = existingPage && writebackResult && !writebackResult.applied
+    ? existingPage
+    : undefined;
+  const preservePendingEdits = Boolean(pendingEditPage);
   const jiraStatus = issueStatus(issue);
   const existingBoardStatus = existingPage
     ? richTextValue(existingPage.properties["Board Status"])
@@ -423,18 +495,18 @@ export function editableBoardPropertiesForIssue(options: {
     existingBoardStatus &&
     existingJiraStatus &&
     normalizeStatus(existingBoardStatus) !== normalizeStatus(existingJiraStatus);
-  const preserveBoardStatus = hasPendingHumanStatus && !writebackResult?.applied;
+  const preserveBoardStatus = hasPendingHumanStatus && preservePendingEdits;
   const boardStatus = preserveBoardStatus ? existingBoardStatus : jiraStatus;
 
   return {
-    Name: titleProperty(issueSummary(issue)),
+    Name: titleProperty(pendingEditPage ? richTextValue(pendingEditPage.properties.Name) || issueSummary(issue) : issueSummary(issue)),
     "Issue Key": richTextProperty(issue.key),
     "Board Status": selectProperty(boardStatus),
     "Jira Status": richTextProperty(jiraStatus),
-    Priority: richTextProperty(issue.fields.priority?.name ?? ""),
-    Assignee: richTextProperty(issueAssignee(issue)),
-    "Issue Type": richTextProperty(issue.fields.issuetype?.name ?? ""),
-    "Epic Link": richTextProperty(issueEpicLink(issue)),
+    Priority: richTextProperty(pendingEditPage ? richTextValue(pendingEditPage.properties.Priority) : issue.fields.priority?.name ?? ""),
+    Assignee: richTextProperty(pendingEditPage ? richTextValue(pendingEditPage.properties.Assignee) : issueAssignee(issue)),
+    "Issue Type": richTextProperty(pendingEditPage ? richTextValue(pendingEditPage.properties["Issue Type"]) : issue.fields.issuetype?.name ?? ""),
+    "Epic Link": richTextProperty(pendingEditPage ? richTextValue(pendingEditPage.properties["Epic Link"]) : issueEpicLink(issue)),
     Updated: dateProperty(issue.fields.updated),
     "Jira Link": urlProperty(jiraIssueUrl(jiraBaseUrl, issue.key)),
     "Last Synced At": dateProperty(new Date().toISOString()),

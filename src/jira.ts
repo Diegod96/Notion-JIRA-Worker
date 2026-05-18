@@ -31,6 +31,8 @@ export type JiraTransition = {
   to?: { name?: string | null } | null;
 };
 
+export type JiraIssueFieldsUpdate = Record<string, unknown>;
+
 export type JiraClientOptions = {
   baseUrl?: string;
   pat: string;
@@ -123,6 +125,15 @@ export class JiraClient {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ transition: { id: transitionId } }),
+      expectJson: false,
+    });
+  }
+
+  async updateIssueFields(issueKey: string, fields: JiraIssueFieldsUpdate): Promise<void> {
+    await this.request(`/rest/api/2/issue/${encodeURIComponent(issueKey)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fields }),
       expectJson: false,
     });
   }
