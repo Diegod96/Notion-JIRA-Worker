@@ -4,7 +4,7 @@ This project defines a Notion Worker-managed database named `Techdebt Stories`, 
 
 Jira is VPN-bound, so the local bridge is the operational sync path. It runs on the Mac, verifies Jira is reachable, handles guarded Notion-to-Jira status transitions from `Techdebt Board`, and refreshes editable board rows from Jira.
 
-The Worker-managed Jira snapshot properties in `Techdebt Stories` are read-only in the Notion UI. Edit `Techdebt Board` instead. Use `Board Status` for Notion-requested Jira transitions, `Notes` for human notes, and `Writeback Error` for bridge-visible failures.
+The Worker-managed Jira snapshot properties in `Techdebt Stories` are read-only in the Notion UI. Edit `Techdebt Board` instead. Edits to Jira-backed fields on `Techdebt Board` are written back to Jira by the local bridge; `Writeback Error` shows validation, stale-row, or Jira API failures.
 
 ## Setup
 
@@ -81,12 +81,13 @@ npm run sync:local
 The bridge:
 
 - Calls Jira `/rest/api/2/myself` first and exits before Notion mutation if Jira is unreachable.
-- Finds editable board rows where `Board Status` differs from `Jira Status`.
-- Fetches each Jira issue and compares Jira `updated` to the row's synced `Updated`.
-- Applies only valid Jira transitions.
-- Writes stale or invalid transition messages to `Writeback Error`.
+- Finds editable board rows by `Issue Key`.
+- Fetches each Jira issue and compares Jira `updated` to the row's synced `Updated` before applying Notion edits.
+- Writes edited `Name`, `Priority`, `Assignee`, `Issue Type`, and `Epic Link` values back through Jira issue update.
+- Applies `Board Status` through valid Jira transitions.
+- Writes stale, invalid transition, or Jira update failures to `Writeback Error`.
 - Upserts one editable board row per Jira issue using `Issue Key`.
-- Initializes `Board Status` from Jira on new rows and preserves pending human board moves after stale or invalid writeback attempts.
+- Refreshes editable board fields from Jira after successful writeback, and preserves pending human edits after stale or invalid writeback attempts.
 
 ## launchd
 

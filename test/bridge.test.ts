@@ -6,6 +6,8 @@ import {
   normalizeNotionDate,
   normalizeStatus,
   notionPropertiesForIssue,
+  requestedJiraChanges,
+  sameSyncedMinute,
   toPendingStatusChange,
   writeVpnFailureSignal,
 } from "../scripts/sync-techdebt-stories.js";
@@ -17,7 +19,7 @@ test("normalizeStatus trims, collapses whitespace, and ignores case", () => {
   assert.equal(normalizeStatus("  In   Progress "), "in progress");
 });
 
-test("toPendingStatusChange returns null when Notion status matches Jira status", () => {
+test("toPendingStatusChange returns a row-level change candidate", () => {
   const change = toPendingStatusChange({
     id: "page-1",
     properties: {
@@ -28,10 +30,16 @@ test("toPendingStatusChange returns null when Notion status matches Jira status"
     },
   });
 
-  assert.equal(change, null);
+  assert.deepEqual(change && {
+    issueKey: change.issueKey,
+    syncedUpdated: change.syncedUpdated,
+  }, {
+    issueKey: "TECHDEBT-1",
+    syncedUpdated: "2026-05-15T13:00:00.000-0400",
+  });
 });
 
-test("toPendingStatusChange returns a requested transition when statuses differ", () => {
+test("toPendingStatusChange keeps rows with editable field changes in scope", () => {
   const change = toPendingStatusChange({
     id: "page-1",
     properties: {
@@ -44,22 +52,17 @@ test("toPendingStatusChange returns a requested transition when statuses differ"
 
   assert.deepEqual(change && {
     issueKey: change.issueKey,
-    requestedStatus: change.requestedStatus,
-    syncedJiraStatus: change.syncedJiraStatus,
     syncedUpdated: change.syncedUpdated,
   }, {
     issueKey: "TECHDEBT-1",
-    requestedStatus: "Ready for QA",
-    syncedJiraStatus: "In Progress",
     syncedUpdated: "2026-05-15T13:00:00.000-0400",
   });
 });
 
-test("toPendingStatusChange ignores read-only Status when Board Status is empty", () => {
+test("toPendingStatusChange ignores rows without an issue key", () => {
   const change = toPendingStatusChange({
     id: "page-1",
     properties: {
-      "Issue Key": richText("TECHDEBT-1"),
       Status: richText("In Progress"),
       "Jira Status": richText("In Progress"),
       Updated: date("2026-05-15T13:00:00.000-0400"),
@@ -67,6 +70,40 @@ test("toPendingStatusChange ignores read-only Status when Board Status is empty"
   });
 
   assert.equal(change, null);
+});
+
+test("requestedJiraChanges maps edited board fields to Jira field payloads", () => {
+  const issue: JiraIssue = {
+    id: "10001",
+    key: "TECHDEBT-1",
+    fields: {
+      summary: "Fix old flow",
+      status: { name: "In Progress" },
+      priority: { name: "Minor" },
+      assignee: { displayName: "Diego Delgado" },
+      issuetype: { name: "Story" },
+      customfield_10008: "TECHDEBT-4",
+    },
+  };
+
+  const changes = requestedJiraChanges({
+    id: "page-1",
+    properties: {
+      Name: title("Fix old flow updated"),
+      "Board Status": select("Ready for QA"),
+      Priority: richText("Medium"),
+      Assignee: richText("Diego Delgado"),
+      "Issue Type": richText("Story"),
+      "Epic Link": richText("TECHDEBT-4"),
+    },
+  }, issue);
+
+  assert.deepEqual(changes.fields, {
+    summary: "Fix old flow updated",
+    priority: { name: "Medium" },
+  });
+  assert.equal(changes.status, "Ready for QA");
+  assert.deepEqual(changes.changedFields, ["Name", "Priority", "Board Status"]);
 });
 
 test("notionPropertiesForIssue maps Jira issue into Notion REST properties", () => {
@@ -114,6 +151,24 @@ test("normalizeNotionDate converts Jira timestamps to ISO timestamps", () => {
   assert.equal(
     normalizeNotionDate("2026-05-15T13:00:00.000-0400"),
     "2026-05-15T17:00:00.000Z",
+  );
+});
+
+test("normalizeNotionDate leaves Notion ISO timestamps comparable", () => {
+  assert.equal(
+    normalizeNotionDate("2026-05-15T17:00:00.000Z"),
+    "2026-05-15T17:00:00.000Z",
+  );
+});
+
+test("sameSyncedMinute tolerates Notion date precision loss", () => {
+  assert.equal(
+    sameSyncedMinute("2026-05-11T16:50:09.664Z", "2026-05-11T16:50:00.000Z"),
+    true,
+  );
+  assert.equal(
+    sameSyncedMinute("2026-05-11T16:51:00.000Z", "2026-05-11T16:50:00.000Z"),
+    false,
   );
 });
 
@@ -171,8 +226,13 @@ test("editableBoardPropertiesForIssue preserves a pending human Board Status", (
     existingPage: {
       id: "page-1",
       properties: {
+        Name: title("Human-edited summary"),
         "Board Status": select("Ready for QA"),
         "Jira Status": richText("In Progress"),
+        Priority: richText("Medium"),
+        Assignee: richText("Someone Else"),
+        "Issue Type": richText("Bug"),
+        "Epic Link": richText("TECHDEBT-99"),
       },
     },
     writebackResult: {
@@ -184,6 +244,12 @@ test("editableBoardPropertiesForIssue preserves a pending human Board Status", (
 
   assert.deepEqual(properties["Board Status"], {
     select: { name: "Ready for QA" },
+  });
+  assert.deepEqual(properties.Name, {
+    title: [{ type: "text", text: { content: "Human-edited summary" } }],
+  });
+  assert.deepEqual(properties.Priority, {
+    rich_text: [{ type: "text", text: { content: "Medium" } }],
   });
   assert.deepEqual(properties["Writeback Error"], {
     rich_text: [{ type: "text", text: { content: "Invalid Jira transition target" } }],
@@ -246,6 +312,13 @@ function richText(content: string) {
   return {
     type: "rich_text",
     rich_text: [{ plain_text: content }],
+  };
+}
+
+function title(content: string) {
+  return {
+    type: "title",
+    title: [{ plain_text: content }],
   };
 }
 
