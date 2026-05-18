@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  editableMirrorPropertiesForIssue,
+  editableBoardPropertiesForIssue,
   clearVpnFailureSignal,
   normalizeNotionDate,
   normalizeStatus,
@@ -22,7 +22,7 @@ test("toPendingStatusChange returns null when Notion status matches Jira status"
     id: "page-1",
     properties: {
       "Issue Key": richText("TECHDEBT-1"),
-      Status: richText("In Progress"),
+      "Board Status": select("In Progress"),
       "Jira Status": richText(" in progress "),
       Updated: date("2026-05-15T13:00:00.000-0400"),
     },
@@ -36,7 +36,7 @@ test("toPendingStatusChange returns a requested transition when statuses differ"
     id: "page-1",
     properties: {
       "Issue Key": richText("TECHDEBT-1"),
-      Status: richText("Done"),
+      "Board Status": select("Ready for QA"),
       "Jira Status": richText("In Progress"),
       Updated: date("2026-05-15T13:00:00.000-0400"),
     },
@@ -49,25 +49,24 @@ test("toPendingStatusChange returns a requested transition when statuses differ"
     syncedUpdated: change.syncedUpdated,
   }, {
     issueKey: "TECHDEBT-1",
-    requestedStatus: "Done",
+    requestedStatus: "Ready for QA",
     syncedJiraStatus: "In Progress",
     syncedUpdated: "2026-05-15T13:00:00.000-0400",
   });
 });
 
-test("toPendingStatusChange prefers editable Board Status over read-only Status", () => {
+test("toPendingStatusChange ignores read-only Status when Board Status is empty", () => {
   const change = toPendingStatusChange({
     id: "page-1",
     properties: {
       "Issue Key": richText("TECHDEBT-1"),
-      "Board Status": select("Ready for QA"),
       Status: richText("In Progress"),
       "Jira Status": richText("In Progress"),
       Updated: date("2026-05-15T13:00:00.000-0400"),
     },
   });
 
-  assert.equal(change?.requestedStatus, "Ready for QA");
+  assert.equal(change, null);
 });
 
 test("notionPropertiesForIssue maps Jira issue into Notion REST properties", () => {
@@ -118,18 +117,107 @@ test("normalizeNotionDate converts Jira timestamps to ISO timestamps", () => {
   );
 });
 
-test("editableMirrorPropertiesForIssue only writes editable bridge fields", () => {
+test("editableBoardPropertiesForIssue maps Jira issue into editable board fields", () => {
   const issue: JiraIssue = {
     id: "10001",
     key: "TECHDEBT-1",
     fields: {
+      summary: "Fix old flow",
       status: { name: "Ready" },
+      priority: { name: "Minor" },
+      assignee: { displayName: "Diego Delgado" },
+      issuetype: { name: "Story" },
+      customfield_10008: "TECHDEBT-4",
+      updated: "2026-05-15T13:00:00.000-0400",
     },
   };
 
-  assert.deepEqual(editableMirrorPropertiesForIssue({ issue, syncError: "" }), {
-    "Board Status": { select: { name: "Ready" } },
-    "Writeback Error": { rich_text: [] },
+  const properties = editableBoardPropertiesForIssue({
+    issue,
+    jiraBaseUrl: "https://jira.dev.upenn.edu",
+    writebackResult: { issueKey: "TECHDEBT-1", syncError: "", applied: true },
+  });
+
+  assert.deepEqual(properties.Name, {
+    title: [{ type: "text", text: { content: "Fix old flow" } }],
+  });
+  assert.deepEqual(properties["Issue Key"], {
+    rich_text: [{ type: "text", text: { content: "TECHDEBT-1" } }],
+  });
+  assert.deepEqual(properties["Jira Link"], {
+    url: "https://jira.dev.upenn.edu/browse/TECHDEBT-1",
+  });
+  assert.deepEqual(properties["Jira Status"], {
+    rich_text: [{ type: "text", text: { content: "Ready" } }],
+  });
+  assert.deepEqual(properties["Board Status"], {
+    select: { name: "Ready" },
+  });
+});
+
+test("editableBoardPropertiesForIssue preserves a pending human Board Status", () => {
+  const issue: JiraIssue = {
+    id: "10001",
+    key: "TECHDEBT-1",
+    fields: {
+      summary: "Fix old flow",
+      status: { name: "In Progress" },
+    },
+  };
+
+  const properties = editableBoardPropertiesForIssue({
+    issue,
+    jiraBaseUrl: "https://jira.dev.upenn.edu",
+    existingPage: {
+      id: "page-1",
+      properties: {
+        "Board Status": select("Ready for QA"),
+        "Jira Status": richText("In Progress"),
+      },
+    },
+    writebackResult: {
+      issueKey: "TECHDEBT-1",
+      syncError: "Invalid Jira transition target",
+      applied: false,
+    },
+  });
+
+  assert.deepEqual(properties["Board Status"], {
+    select: { name: "Ready for QA" },
+  });
+  assert.deepEqual(properties["Writeback Error"], {
+    rich_text: [{ type: "text", text: { content: "Invalid Jira transition target" } }],
+  });
+});
+
+test("editableBoardPropertiesForIssue resets Board Status after applied writeback", () => {
+  const issue: JiraIssue = {
+    id: "10001",
+    key: "TECHDEBT-1",
+    fields: {
+      summary: "Fix old flow",
+      status: { name: "Ready for QA" },
+    },
+  };
+
+  const properties = editableBoardPropertiesForIssue({
+    issue,
+    jiraBaseUrl: "https://jira.dev.upenn.edu",
+    existingPage: {
+      id: "page-1",
+      properties: {
+        "Board Status": select("Ready for QA"),
+        "Jira Status": richText("In Progress"),
+      },
+    },
+    writebackResult: { issueKey: "TECHDEBT-1", syncError: "", applied: true },
+  });
+
+  assert.deepEqual(properties["Board Status"], {
+    select: { name: "Ready for QA" },
+  });
+  assert.deepEqual(properties["Writeback Error"], {
+    rich_text: [],
   });
 });
 
@@ -139,14 +227,8 @@ test("writeVpnFailureSignal creates a Codex-readable remediation marker", async 
     error: new Error("connect ETIMEDOUT"),
   });
 
-  const marker = await readFile(
-    "/Users/diegodelgado/Developer/Personal/Notion-JIRA-Techdebt-Worker/logs/vpn-reactivation-needed.json",
-    "utf8",
-  );
-  const prompt = await readFile(
-    "/Users/diegodelgado/Developer/Personal/Notion-JIRA-Techdebt-Worker/logs/vpn-reactivation-needed.md",
-    "utf8",
-  );
+  const marker = await readFile("logs/vpn-reactivation-needed.json", "utf8");
+  const prompt = await readFile("logs/vpn-reactivation-needed.md", "utf8");
 
   assert.match(marker, /reactivate_globalprotect/);
   assert.match(prompt, /Use Computer Use to open GlobalProtect/);
@@ -154,7 +236,7 @@ test("writeVpnFailureSignal creates a Codex-readable remediation marker", async 
   await clearVpnFailureSignal();
   await assert.rejects(
     access(
-      "/Users/diegodelgado/Developer/Personal/Notion-JIRA-Techdebt-Worker/logs/vpn-reactivation-needed.json",
+      "logs/vpn-reactivation-needed.json",
       constants.F_OK,
     ),
   );
