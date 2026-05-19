@@ -110,7 +110,7 @@ The bridge:
 
 ## launchd
 
-Install the 5-minute local scheduler:
+Install the 1-minute local scheduler:
 
 ```bash
 mkdir -p logs
