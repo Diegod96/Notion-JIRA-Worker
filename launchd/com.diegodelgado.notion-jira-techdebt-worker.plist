@@ -8,15 +8,15 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/diegodelgado/Developer/Personal/Notion-JIRA-Techdebt-Worker/scripts/run-sync-techdebt-stories.sh</string>
+    <string>/Users/diegodelgado/Developer/Work/Notion Workers/Notion-JIRA-Techdebt-Worker/scripts/run-sync-techdebt-stories.sh</string>
   </array>
   <key>StartInterval</key>
   <integer>300</integer>
   <key>RunAtLoad</key>
   <false/>
   <key>StandardOutPath</key>
-  <string>/Users/diegodelgado/Developer/Personal/Notion-JIRA-Techdebt-Worker/logs/launchd.out.log</string>
+  <string>/Users/diegodelgado/Developer/Work/Notion Workers/Notion-JIRA-Techdebt-Worker/logs/launchd.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/diegodelgado/Developer/Personal/Notion-JIRA-Techdebt-Worker/logs/launchd.err.log</string>
+  <string>/Users/diegodelgado/Developer/Work/Notion Workers/Notion-JIRA-Techdebt-Worker/logs/launchd.err.log</string>
 </dict>
 </plist>

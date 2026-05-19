@@ -626,8 +626,16 @@ function titleProperty(content: string): JsonObject {
 
 function richTextProperty(content: string): JsonObject {
   return {
-    rich_text: content ? [{ type: "text", text: { content } }] : [],
+    rich_text: chunkText(content).map((chunk) => ({ type: "text", text: { content: chunk } })),
   };
+}
+
+function chunkText(content: string): string[] {
+  const chunks: string[] = [];
+  for (let index = 0; index < content.length; index += 1900) {
+    chunks.push(content.slice(index, index + 1900));
+  }
+  return chunks;
 }
 
 function urlProperty(url: string): JsonObject {

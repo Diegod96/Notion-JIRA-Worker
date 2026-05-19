@@ -141,6 +141,32 @@ test("formatJiraComments formats author, timestamp, and body", () => {
   );
 });
 
+test("editableBoardPropertiesForIssue chunks long Jira comment history for Notion rich text limits", () => {
+  const issue: JiraIssue = {
+    id: "10001",
+    key: "TECHDEBT-1",
+    fields: {
+      summary: "Fix old flow",
+      status: { name: "Ready" },
+    },
+  };
+
+  const properties = editableBoardPropertiesForIssue({
+    issue,
+    comments: [{
+      id: "1000",
+      author: { displayName: "Diego Delgado" },
+      created: "2026-05-19T12:34:56.000Z",
+      body: "x".repeat(4100),
+    }],
+    jiraBaseUrl: "https://jira.dev.upenn.edu",
+  });
+
+  const richText = properties["Jira Comments"] as { rich_text: Array<{ text: { content: string } }> };
+  assert.ok(richText.rich_text.length > 1);
+  assert.ok(richText.rich_text.every((item) => item.text.content.length <= 1900));
+});
+
 test("notionPropertiesForIssue maps Jira issue into Notion REST properties", () => {
   const issue: JiraIssue = {
     id: "10001",
