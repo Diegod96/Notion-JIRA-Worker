@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="/Users/diegodelgado/Developer/Personal/Notion-JIRA-Techdebt-Worker"
+PROJECT_DIR="/Users/diegodelgado/Developer/Work/Notion Workers/Notion-JIRA-Techdebt-Worker"
 LOG_DIR="$PROJECT_DIR/logs"
+export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 mkdir -p "$LOG_DIR"
 cd "$PROJECT_DIR"

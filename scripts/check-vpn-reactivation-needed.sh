@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="/Users/diegodelgado/Developer/Personal/Notion-JIRA-Techdebt-Worker"
+PROJECT_DIR="/Users/diegodelgado/Developer/Work/Notion Workers/Notion-JIRA-Techdebt-Worker"
 MARKER="$PROJECT_DIR/logs/vpn-reactivation-needed.json"
 PROMPT="$PROJECT_DIR/logs/vpn-reactivation-needed.md"
 

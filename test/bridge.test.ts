@@ -3,9 +3,11 @@ import test from "node:test";
 import {
   editableBoardPropertiesForIssue,
   clearVpnFailureSignal,
+  formatJiraComments,
   normalizeNotionDate,
   normalizeStatus,
   notionPropertiesForIssue,
+  requestedJiraComment,
   requestedJiraChanges,
   sameSyncedMinute,
   toPendingStatusChange,
@@ -106,6 +108,65 @@ test("requestedJiraChanges maps edited board fields to Jira field payloads", () 
   assert.deepEqual(changes.changedFields, ["Name", "Priority", "Board Status"]);
 });
 
+test("requestedJiraComment returns trimmed outbound comment text", () => {
+  const comment = requestedJiraComment({
+    id: "page-1",
+    properties: {
+      "New Jira Comment": richText("  Please verify in CSQA.  "),
+    },
+  });
+
+  assert.equal(comment, "Please verify in CSQA.");
+});
+
+test("formatJiraComments formats author, timestamp, and body", () => {
+  const value = formatJiraComments([
+    {
+      id: "1000",
+      author: { displayName: "Diego Delgado" },
+      created: "2026-05-19T12:34:56.000Z",
+      body: "First update",
+    },
+    {
+      id: "1001",
+      author: { displayName: "QA User" },
+      created: "2026-05-19T13:45:00.000Z",
+      body: "Second update",
+    },
+  ]);
+
+  assert.equal(
+    value,
+    "[2026-05-19 12:34:56 - Diego Delgado]\nFirst update\n\n[2026-05-19 13:45:00 - QA User]\nSecond update",
+  );
+});
+
+test("editableBoardPropertiesForIssue chunks long Jira comment history for Notion rich text limits", () => {
+  const issue: JiraIssue = {
+    id: "10001",
+    key: "TECHDEBT-1",
+    fields: {
+      summary: "Fix old flow",
+      status: { name: "Ready" },
+    },
+  };
+
+  const properties = editableBoardPropertiesForIssue({
+    issue,
+    comments: [{
+      id: "1000",
+      author: { displayName: "Diego Delgado" },
+      created: "2026-05-19T12:34:56.000Z",
+      body: "x".repeat(4100),
+    }],
+    jiraBaseUrl: "https://jira.dev.upenn.edu",
+  });
+
+  const richText = properties["Jira Comments"] as { rich_text: Array<{ text: { content: string } }> };
+  assert.ok(richText.rich_text.length > 1);
+  assert.ok(richText.rich_text.every((item) => item.text.content.length <= 1900));
+});
+
 test("notionPropertiesForIssue maps Jira issue into Notion REST properties", () => {
   const issue: JiraIssue = {
     id: "10001",
@@ -195,7 +256,14 @@ test("editableBoardPropertiesForIssue maps Jira issue into editable board fields
   const properties = editableBoardPropertiesForIssue({
     issue,
     jiraBaseUrl: "https://jira.dev.upenn.edu",
-    writebackResult: { issueKey: "TECHDEBT-1", syncError: "", applied: true },
+    comments: [],
+    writebackResult: {
+      issueKey: "TECHDEBT-1",
+      syncError: "",
+      commentSyncError: "",
+      clearNewJiraComment: true,
+      applied: true,
+    },
   });
 
   assert.deepEqual(properties.Name, {
@@ -215,6 +283,9 @@ test("editableBoardPropertiesForIssue maps Jira issue into editable board fields
   });
   assert.deepEqual(properties.Project, {
     rich_text: [{ type: "text", text: { content: "TECHDEBT" } }],
+  });
+  assert.deepEqual(properties["New Jira Comment"], {
+    rich_text: [],
   });
 });
 
@@ -246,6 +317,8 @@ test("editableBoardPropertiesForIssue preserves a pending human Board Status", (
     writebackResult: {
       issueKey: "TECHDEBT-1",
       syncError: "Invalid Jira transition target",
+      commentSyncError: "Jira 500 Internal Server Error",
+      clearNewJiraComment: false,
       applied: false,
     },
   });
@@ -261,6 +334,9 @@ test("editableBoardPropertiesForIssue preserves a pending human Board Status", (
   });
   assert.deepEqual(properties["Writeback Error"], {
     rich_text: [{ type: "text", text: { content: "Invalid Jira transition target" } }],
+  });
+  assert.deepEqual(properties["Comment Sync Error"], {
+    rich_text: [{ type: "text", text: { content: "Jira 500 Internal Server Error" } }],
   });
 });
 
@@ -282,15 +358,25 @@ test("editableBoardPropertiesForIssue resets Board Status after applied writebac
       properties: {
         "Board Status": select("Ready for QA"),
         "Jira Status": richText("In Progress"),
+        "New Jira Comment": richText("Ship it"),
       },
     },
-    writebackResult: { issueKey: "TECHDEBT-1", syncError: "", applied: true },
+    writebackResult: {
+      issueKey: "TECHDEBT-1",
+      syncError: "",
+      commentSyncError: "",
+      clearNewJiraComment: true,
+      applied: true,
+    },
   });
 
   assert.deepEqual(properties["Board Status"], {
     select: { name: "Ready for QA" },
   });
   assert.deepEqual(properties["Writeback Error"], {
+    rich_text: [],
+  });
+  assert.deepEqual(properties["New Jira Comment"], {
     rich_text: [],
   });
 });

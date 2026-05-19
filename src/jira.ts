@@ -34,6 +34,14 @@ export type JiraTransition = {
 
 export type JiraIssueFieldsUpdate = Record<string, unknown>;
 
+export type JiraComment = {
+  id: string;
+  body?: string | null;
+  author?: { displayName?: string | null } | null;
+  created?: string | null;
+  updated?: string | null;
+};
+
 export type JiraClientOptions = {
   baseUrl?: string;
   pat: string;
@@ -138,6 +146,42 @@ export class JiraClient {
       body: JSON.stringify({ fields }),
       expectJson: false,
     });
+  }
+
+  async getIssueComments(issueKey: string, maxResults = 100): Promise<JiraComment[]> {
+    const comments: JiraComment[] = [];
+    let startAt = 0;
+
+    while (true) {
+      const page = (await this.request(
+        `/rest/api/2/issue/${encodeURIComponent(issueKey)}/comment?startAt=${startAt}&maxResults=${maxResults}`,
+      )) as {
+        comments?: JiraComment[];
+        startAt?: number;
+        maxResults?: number;
+        total?: number;
+      };
+
+      const pageComments = page.comments ?? [];
+      comments.push(...pageComments);
+
+      const nextStartAt = (page.startAt ?? startAt) + pageComments.length;
+      const total = page.total ?? comments.length;
+
+      if (pageComments.length === 0 || nextStartAt >= total) {
+        return comments;
+      }
+
+      startAt = nextStartAt;
+    }
+  }
+
+  async addIssueComment(issueKey: string, body: string): Promise<JiraComment> {
+    return this.request(`/rest/api/2/issue/${encodeURIComponent(issueKey)}/comment`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body }),
+    }) as Promise<JiraComment>;
   }
 
   private async request(path: string, init: RequestInit & { expectJson?: boolean } = {}) {
