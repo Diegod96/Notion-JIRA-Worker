@@ -5,6 +5,7 @@ import {
   requiredEnv,
 } from "../src/config.js";
 import {
+  JiraComment,
   JiraClient,
   issueAssignee,
   issueEpicLink,
@@ -41,6 +42,8 @@ type LogLevel = "info" | "warn" | "error";
 type WritebackResult = {
   issueKey: string;
   syncError: string;
+  commentSyncError: string;
+  clearNewJiraComment: boolean;
   applied: boolean;
 };
 
@@ -87,6 +90,7 @@ async function main() {
     boardDataSourceId: env.notionBoardDataSourceId,
     existingPages: boardPages,
     issues,
+    jira,
     jiraBaseUrl: env.jiraBaseUrl,
     writebackResults,
     logger,
@@ -114,12 +118,39 @@ async function processIssueChange(options: {
 }): Promise<WritebackResult> {
   const { change, jira, notion, logger } = options;
   const issue = await jira.getIssue(change.issueKey);
+  const requestedComment = requestedJiraComment(change.page);
+  let commentSyncError = "";
+  let clearNewJiraComment = false;
+
+  if (requestedComment) {
+    try {
+      await jira.addIssueComment(change.issueKey, requestedComment);
+      clearNewJiraComment = true;
+    } catch (error) {
+      commentSyncError = errorMessage(error);
+      await notion.updateCommentSyncError(change.page.id, commentSyncError);
+      logger.warn("failed Jira comment writeback", {
+        issueKey: change.issueKey,
+        error: commentSyncError,
+      });
+    }
+  }
+
   const currentUpdated = normalizeNotionDate(issue.fields.updated);
   const syncedUpdated = normalizeNotionDate(change.syncedUpdated);
   const requested = requestedJiraChanges(change.page, issue);
 
   if (!requested.hasChanges) {
-    return { issueKey: change.issueKey, syncError: "", applied: true };
+    if (clearNewJiraComment && !commentSyncError) {
+      await notion.updateCommentSyncError(change.page.id, "");
+    }
+    return {
+      issueKey: change.issueKey,
+      syncError: "",
+      commentSyncError,
+      clearNewJiraComment,
+      applied: true,
+    };
   }
 
   if (!sameSyncedMinute(currentUpdated, syncedUpdated)) {
@@ -129,7 +160,16 @@ async function processIssueChange(options: {
       issueKey: change.issueKey,
       changedFields: requested.changedFields,
     });
-    return { issueKey: change.issueKey, syncError: message, applied: false };
+    if (clearNewJiraComment && !commentSyncError) {
+      await notion.updateCommentSyncError(change.page.id, "");
+    }
+    return {
+      issueKey: change.issueKey,
+      syncError: message,
+      commentSyncError,
+      clearNewJiraComment,
+      applied: false,
+    };
   }
 
   try {
@@ -160,15 +200,30 @@ async function processIssueChange(options: {
       changedFields: requested.changedFields,
       error: message,
     });
-    return { issueKey: change.issueKey, syncError: message, applied: false };
+    return {
+      issueKey: change.issueKey,
+      syncError: message,
+      commentSyncError,
+      clearNewJiraComment,
+      applied: false,
+    };
   }
 
   await notion.updateSyncError(change.page.id, "");
+  if (clearNewJiraComment && !commentSyncError) {
+    await notion.updateCommentSyncError(change.page.id, "");
+  }
   logger.info("updated Jira issue from Notion", {
     issueKey: change.issueKey,
     changedFields: requested.changedFields,
   });
-  return { issueKey: change.issueKey, syncError: "", applied: true };
+  return {
+    issueKey: change.issueKey,
+    syncError: "",
+    commentSyncError,
+    clearNewJiraComment,
+    applied: true,
+  };
 }
 
 export function toPendingIssueChange(page: NotionPage): PendingIssueChange | null {
@@ -236,6 +291,10 @@ export function requestedJiraChanges(page: NotionPage, issue: JiraIssue) {
     changedFields,
     hasChanges: changedFields.length > 0,
   };
+}
+
+export function requestedJiraComment(page: NotionPage): string {
+  return richTextValue(page.properties["New Jira Comment"]);
 }
 
 export function normalizeStatus(value: string): string {
@@ -327,10 +386,26 @@ class NotionClient {
     });
   }
 
+  async updateCommentSyncError(pageId: string, message: string): Promise<void> {
+    await this.request(`/v1/pages/${encodeURIComponent(pageId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        properties: {
+          "Comment Sync Error": {
+            rich_text: message
+              ? [{ type: "text", text: { content: message.slice(0, 1900) } }]
+              : [],
+          },
+        },
+      }),
+    });
+  }
+
   async syncEditableBoard(options: {
     boardDataSourceId: string;
     existingPages: NotionPage[];
     issues: JiraIssue[];
+    jira: JiraClient;
     jiraBaseUrl: string;
     writebackResults: Map<string, WritebackResult>;
     logger: ReturnType<typeof createLogger>;
@@ -346,8 +421,10 @@ class NotionClient {
 
     for (const issue of issues) {
       const page = pageByIssueKey.get(issue.key);
+      const comments = await options.jira.getIssueComments(issue.key);
       const properties = editableBoardPropertiesForIssue({
         issue,
+        comments,
         jiraBaseUrl,
         existingPage: page,
         writebackResult: writebackResults.get(issue.key),
@@ -449,10 +526,11 @@ function textItemValue(item: unknown): string {
 
 export function notionPropertiesForIssue(options: {
   issue: JiraIssue;
+  comments?: JiraComment[];
   jiraBaseUrl: string;
   syncError: string;
 }): JsonObject {
-  const { issue, jiraBaseUrl, syncError } = options;
+  const { issue, comments = [], jiraBaseUrl, syncError } = options;
   const status = issueStatus(issue);
 
   return {
@@ -470,6 +548,8 @@ export function notionPropertiesForIssue(options: {
     Created: dateProperty(issue.fields.created),
     "Due Date": dateProperty(issue.fields.duedate),
     Labels: multiSelectProperty(issue.fields.labels ?? []),
+    "Jira Comments": richTextProperty(formatJiraComments(comments)),
+    "Last Comment Synced At": dateProperty(new Date().toISOString()),
     "Last Synced At": dateProperty(new Date().toISOString()),
     "Sync Error": richTextProperty(syncError),
   };
@@ -477,11 +557,12 @@ export function notionPropertiesForIssue(options: {
 
 export function editableBoardPropertiesForIssue(options: {
   issue: JiraIssue;
+  comments?: JiraComment[];
   jiraBaseUrl: string;
   existingPage?: NotionPage;
   writebackResult?: WritebackResult;
 }): JsonObject {
-  const { issue, jiraBaseUrl, existingPage, writebackResult } = options;
+  const { issue, comments = [], jiraBaseUrl, existingPage, writebackResult } = options;
   const pendingEditPage = existingPage && writebackResult && !writebackResult.applied
     ? existingPage
     : undefined;
@@ -512,9 +593,29 @@ export function editableBoardPropertiesForIssue(options: {
     "Epic Link": richTextProperty(pendingEditPage ? richTextValue(pendingEditPage.properties["Epic Link"]) : issueEpicLink(issue)),
     Updated: dateProperty(issue.fields.updated),
     "Jira Link": urlProperty(jiraIssueUrl(jiraBaseUrl, issue.key)),
+    "Jira Comments": richTextProperty(formatJiraComments(comments)),
+    "New Jira Comment": richTextProperty(writebackResult?.clearNewJiraComment ? "" : richTextValue(existingPage?.properties["New Jira Comment"])),
+    "Comment Sync Error": richTextProperty(writebackResult?.commentSyncError ?? richTextValue(existingPage?.properties["Comment Sync Error"])),
+    "Last Comment Synced At": dateProperty(new Date().toISOString()),
     "Last Synced At": dateProperty(new Date().toISOString()),
     "Writeback Error": richTextProperty(writebackResult?.syncError ?? ""),
   };
+}
+
+export function formatJiraComments(comments: JiraComment[]): string {
+  if (comments.length === 0) {
+    return "";
+  }
+
+  return comments
+    .map((comment) => {
+      const created = normalizeNotionDate(comment.created);
+      const when = created ? created.slice(0, 19).replace("T", " ") : "unknown time";
+      const author = comment.author?.displayName?.trim() || "Unknown";
+      const body = (comment.body ?? "").trim();
+      return `[${when} - ${author}]\n${body}`;
+    })
+    .join("\n\n");
 }
 
 function titleProperty(content: string): JsonObject {

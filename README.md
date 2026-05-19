@@ -72,6 +72,10 @@ Required fields:
 - `Jira Link`
 - `Last Synced At`
 - `Writeback Error`
+- `Jira Comments`
+- `New Jira Comment`
+- `Comment Sync Error`
+- `Last Comment Synced At`
 - `Notes`
 
 The canonical board view should group by `Board Status`. Keep one board for all synced Jira projects, and add filtered Notion views by `Project` when you want project-specific Kanban or table views. The current editable board data source is:
@@ -97,7 +101,10 @@ The bridge:
 - Fetches each Jira issue and compares Jira `updated` to the row's synced `Updated` before applying Notion edits.
 - Writes edited `Name`, `Priority`, `Assignee`, `Issue Type`, and `Epic Link` values back through Jira issue update.
 - Applies `Board Status` through valid Jira transitions.
+- Posts `New Jira Comment` into Jira issue comments and clears it after successful post.
 - Writes stale, invalid transition, or Jira update failures to `Writeback Error`.
+- Writes Jira comment post failures to `Comment Sync Error`.
+- Refreshes `Jira Comments` and `Last Comment Synced At` from Jira on each sync.
 - Upserts one editable board row per Jira issue using `Issue Key`.
 - Refreshes editable board fields from Jira after successful writeback, and preserves pending human edits after stale or invalid writeback attempts.
 
